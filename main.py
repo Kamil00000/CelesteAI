@@ -1,61 +1,239 @@
 import numpy as np
 import random
-import pickle
+from collections import deque
+import tensorflow as tf
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import Conv2D, Dense, Flatten
+from tensorflow.keras.optimizers import Adam
+import matplotlib.pyplot as plt
+import os
+from tqdm import tqdm
+
 from celeste_env import CelesteEnv
 
-env = CelesteEnv()
-n_actions = len(env.action_space)
-q_table = {}
 
-def get_state(obs):
-    # Bardzo prymitywne uproszczenie: tylko średnia jasność
-    avg_brightness = int(np.mean(obs) // 10)
-    return avg_brightness
+class DQNAgent:
+    def __init__(self, state_shape, action_size):
+        self.state_shape = state_shape
+        self.action_size = action_size
+        self.memory = deque(maxlen=10000)
+        self.gamma = 0.95  # discount rate
+        self.epsilon = 1.0  # exploration rate
+        self.epsilon_min = 0.01
+        self.epsilon_decay = 0.995
+        self.learning_rate = 0.001
+        self.model = self._build_model()
+        self.target_model = self._build_model()
+        self.update_target_model()
+        self.batch_size = 32
+        self.train_start = 1000
 
-# Hiperparametry
-episodes = 50
-learning_rate = 0.1
-discount = 0.95
-epsilon = 1.0
-epsilon_decay = 0.95
-min_epsilon = 0.1
+    def _build_model(self):
+        model = Sequential()
+        model.add(Conv2D(32, (3, 3), strides=(2, 2), activation='relu',
+                         input_shape=self.state_shape))
+        model.add(Conv2D(64, (2, 2), activation='relu'))
+        model.add(Flatten())
+        model.add(Dense(64, activation='relu'))
+        model.add(Dense(self.action_size, activation='linear'))
+        model.compile(loss='mse', optimizer=Adam(learning_rate=self.learning_rate))
+        return model
 
-for episode in range(episodes):
-    obs = env.reset()
-    state = get_state(obs)
-    #env.debug = True  # Włącz tryb debugowania
-    total_reward = 0
+    def update_target_model(self):
+        self.target_model.set_weights(self.model.get_weights())
 
-    for step in range(200):
-        if random.random() < epsilon:
-            action_idx = random.randint(0, n_actions - 1)
-        else:
-            if state not in q_table:
-                q_table[state] = np.zeros(n_actions)
-            action_idx = np.argmax(q_table[state])
+    def remember(self, state, action, reward, next_state, done):
+        self.memory.append((state, action, reward, next_state, done))
 
-        action = env.action_space[action_idx]
-        next_obs, reward, done, _ = env.step(action)
-        next_state = get_state(next_obs)
+    def act(self, state):
+        if np.random.rand() <= self.epsilon:
+            return random.randrange(self.action_size)
+        act_values = self.model.predict(state[np.newaxis, ...], verbose=0)
+        return np.argmax(act_values[0])
 
-        if state not in q_table:
-            q_table[state] = np.zeros(n_actions)
-        if next_state not in q_table:
-            q_table[next_state] = np.zeros(n_actions)
+    def replay(self):
+        if len(self.memory) < self.train_start:
+            return
 
-        old_value = q_table[state][action_idx]
-        next_max = np.max(q_table[next_state])
+        minibatch = random.sample(self.memory, min(len(self.memory), self.batch_size))
 
-        new_value = (1 - learning_rate) * old_value + learning_rate * (reward + discount * next_max)
-        q_table[state][action_idx] = new_value
+        states = np.array([t[0] for t in minibatch])
+        actions = np.array([t[1] for t in minibatch])
+        rewards = np.array([t[2] for t in minibatch])
+        next_states = np.array([t[3] for t in minibatch])
+        dones = np.array([t[4] for t in minibatch])
 
-        state = next_state
-        total_reward += reward
+        targets = self.model.predict(states, verbose=0)
+        next_q_values = self.target_model.predict(next_states, verbose=0)
 
-        print(f"Episode {episode}, Step {step}, Action {action}, Reward {reward:.4f}, Total {total_reward:.4f}")
+        for i in range(len(minibatch)):
+            if dones[i]:
+                targets[i][actions[i]] = rewards[i]
+            else:
+                targets[i][actions[i]] = rewards[i] + self.gamma * np.amax(next_q_values[i])
 
-    epsilon = max(min_epsilon, epsilon * epsilon_decay)
+        self.model.fit(states, targets, batch_size=self.batch_size, verbose=0)
 
-# Zapisz wytrenowaną tablicę Q
-with open("q_table.pkl", "wb") as f:
-    pickle.dump(q_table, f)
+        if self.epsilon > self.epsilon_min:
+            self.epsilon *= self.epsilon_decay
+
+    def save(self, name):
+        # Zmieniamy rozszerzenie na .weights.h5
+        if not name.endswith('.weights.h5'):
+            if name.endswith('.h5'):
+                name = name.replace('.h5', '.weights.h5')
+            else:
+                name += '.weights.h5'
+        self.model.save_weights(name)
+
+    def load(self, name):
+        # Analogiczna zmiana dla wczytywania
+        if not name.endswith('.weights.h5'):
+            if name.endswith('.h5'):
+                name = name.replace('.h5', '.weights.h5')
+            else:
+                name += '.weights.h5'
+        self.model.load_weights(name)
+
+
+def train_dqn(env, episodes=1000, render_every=50, save_every=100):
+    state_shape = env.observation_shape
+    action_size = env.action_size
+
+    agent = DQNAgent(state_shape, action_size)
+    done = False
+    rewards_history = []
+    epsilons_history = []
+    best_reward = -np.inf
+
+    models_dir = "dqn_models"
+    os.makedirs(models_dir, exist_ok=True)
+
+    for e in tqdm(range(episodes), desc="Training episodes"):
+        state = env.reset()
+        state = np.squeeze(state)
+        total_reward = 0
+
+        while True:
+            action_idx = agent.act(state)
+            action = env.action_space[action_idx]
+
+            next_state, reward, done, info = env.step(action)
+            next_state = np.squeeze(next_state)
+
+            agent.remember(state, action_idx, reward, next_state, done)
+            state = next_state
+            total_reward += reward
+
+            agent.replay()
+
+            if done:
+                break
+
+        if e % 10 == 0:
+            agent.update_target_model()
+
+        rewards_history.append(total_reward)
+        epsilons_history.append(agent.epsilon)
+
+        if total_reward > best_reward:
+            best_reward = total_reward
+            agent.save(f"{models_dir}/best_model.weights.h5")  # Zmienione rozszerzenie
+
+        if e % save_every == 0:
+            agent.save(f"{models_dir}/model_ep_{e}.weights.h5")  # Zmienione rozszerzenie
+
+            # Zapis finalnego modelu
+        agent.save(f"{models_dir}/final_model.weights.h5")  # Zmienione rozszerzenie
+
+    np.savez(f"{env.output_dir}/training_data.npz",
+             rewards=rewards_history,
+             epsilons=epsilons_history)
+
+    return agent, rewards_history
+
+
+def plot_progress(output_dir, episode, rewards, epsilons):
+    plt.figure(figsize=(12, 6))
+
+    plt.subplot(1, 2, 1)
+    plt.plot(rewards)
+    plt.title('Rewards per episode')
+    plt.xlabel('Episode')
+    plt.ylabel('Reward')
+
+    plt.subplot(1, 2, 2)
+    plt.plot(epsilons)
+    plt.title('Epsilon decay')
+    plt.xlabel('Episode')
+    plt.ylabel('Epsilon')
+
+    plt.tight_layout()
+    plt.savefig(f"{output_dir}/training_progress_ep_{episode}.png")
+    plt.close()
+
+
+def test_agent(env, agent, episodes=10):
+    agent.epsilon = 0.01
+
+    test_rewards = []
+
+    for e in range(episodes):
+        state = env.reset()
+        state = np.squeeze(state)
+        total_reward = 0
+        done = False
+
+        while not done:
+            action_idx = agent.act(state)
+            action = env.action_space[action_idx]
+
+            next_state, reward, done, info = env.step(action)
+            next_state = np.squeeze(next_state)
+
+            state = next_state
+            total_reward += reward
+
+        test_rewards.append(total_reward)
+        print(f"Test episode {e + 1}/{episodes}, Reward: {total_reward:.2f}")
+
+    return test_rewards
+
+
+if __name__ == "__main__":
+    env = CelesteEnv(output_dir="celeste_rl_output")
+
+    try:
+        trained_agent, rewards_history = train_dqn(env, episodes=500)
+
+        print("\nTesting trained agent...")
+        test_rewards = test_agent(env, trained_agent, episodes=10)
+
+        plt.figure(figsize=(12, 6))
+
+        plt.subplot(1, 2, 1)
+        plt.plot(rewards_history)
+        plt.title('Training Rewards')
+        plt.xlabel('Episode')
+        plt.ylabel('Reward')
+
+        plt.subplot(1, 2, 2)
+        plt.plot(test_rewards, 'o-')
+        plt.title('Test Rewards')
+        plt.xlabel('Episode')
+        plt.ylabel('Reward')
+
+        plt.tight_layout()
+        plt.savefig(f"{env.output_dir}/final_results.png")
+        plt.show()
+
+    finally:
+        env.close()
+
+
+if __name__ == "__main__":
+    env = CelesteEnv(output_dir="celeste_test_output")
+    try:
+        trained_agent, _ = train_dqn(env, episodes=10)
+    finally:
+        env.close()
