@@ -234,6 +234,6 @@ if __name__ == "__main__":
 if __name__ == "__main__":
     env = CelesteEnv(output_dir="celeste_test_output")
     try:
-        trained_agent, _ = train_dqn(env, episodes=10)
+        trained_agent, _ = train_dqn(env, episodes=20)
     finally:
         env.close()

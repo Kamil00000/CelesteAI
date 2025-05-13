@@ -41,7 +41,7 @@ class CelesteEnv:
         self.episode_reward = 0
         self.episode_rewards = []
         self.episode_count = 0
-        self.max_episode_steps = 2500
+        self.max_episode_steps = 150
 
         # System nagród
         self.reward_weights = {
@@ -61,7 +61,7 @@ class CelesteEnv:
             'skin': {'lower': [12, 71, 230], 'upper': [14, 97, 255]},
             'dress': {'lower': [78, 230, 107], 'upper': [80, 255, 158]}
         }
-        self.min_player_size = 15
+        self.min_player_size = 50
         self.color_tolerance = 5
 
     def _create_action_combinations(self):
@@ -227,7 +227,16 @@ class CelesteEnv:
         draw.text((10, 90), f"Steps: {self.total_steps}", fill=(0, 0, 0))
 
         # Rysowanie prostokąta oznaczającego gracza
-        player_x, player_y = self.last_player_pos
+        player_pos = self._detect_player(img_rgb)
+
+        if player_pos is None and self.last_player_pos is not None:
+            # Handle the case where player isn't detected
+            player_x, player_y = self.last_player_pos  # or some default values
+        elif player_pos is None and self.last_player_pos is None:
+            player_x, player_y = 0, 0
+        else:
+            player_x, player_y = player_pos
+
         player_size = 30  # Możesz dostosować rozmiar prostokąta do swojego gracza
         rect_x1 = player_x - player_size // 2
         rect_y1 = player_y - player_size // 2
@@ -276,18 +285,3 @@ class CelesteEnv:
     def close(self):
         if len(self.episode_rewards) > 0:
             self._plot_training_progress()
-
-
-# Przykład użycia
-if __name__ == "__main__":
-    env = CelesteEnv(output_dir="celeste_rl_debug")
-    try:
-        obs = env.reset()
-        for _ in range(1000):
-            action = random.choice(env.action_space)
-            obs, reward, done, info = env.step(action)
-            print(f"Action: {action}, Reward: {reward:.2f}, Pos: {info['player_pos']}")
-            if done:
-                obs = env.reset()
-    finally:
-        env.close()
