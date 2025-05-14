@@ -77,6 +77,11 @@ class CelesteEnv:
             ['up', 'dash'],  # Dash w górę
             ['jump'],  # Sam skok
             ['dash'],  # Sam dash
+            ['right', 'up', 'jump'],
+            ['left', 'up', 'jump'],
+            ['right', 'up', 'dash'],
+            ['left', 'up', 'dash'],
+
             ['nothing']  # Brak akcji
         ]
 
