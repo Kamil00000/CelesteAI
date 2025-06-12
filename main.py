@@ -8,6 +8,7 @@ from tensorflow.keras.optimizers import Adam
 import matplotlib.pyplot as plt
 import os
 from tqdm import tqdm
+import time
 
 from celeste_env import CelesteEnv
 
@@ -17,10 +18,10 @@ class DQNAgent:
         self.state_shape = state_shape
         self.action_size = action_size
         self.memory = deque(maxlen=10000)
-        self.gamma = 0.95  # discount rate
+        self.gamma = 0.99  # discount rate było 0.95
         self.epsilon = 1.0  # exploration rate
         self.epsilon_min = 0.01
-        self.epsilon_decay = 0.995
+        self.epsilon_decay = 0.990 #było 0.995
         self.learning_rate = 0.001
         self.model = self._build_model()
         self.target_model = self._build_model()
@@ -113,7 +114,6 @@ def train_dqn(env, episodes=1000, render_every=50, save_every=100):
         state = env.reset()
         state = np.squeeze(state)
         total_reward = 0
-
         while True:
             action_idx = agent.act(state)
             action = env.action_space[action_idx]
